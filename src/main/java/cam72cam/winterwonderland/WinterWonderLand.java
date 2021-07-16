@@ -3,6 +3,7 @@ package cam72cam.winterwonderland;
 import java.util.Iterator;
 import java.util.Random;
 
+import net.minecraft.block.Block;
 import net.minecraft.block.BlockSnow;
 import net.minecraft.block.state.IBlockState;
 import net.minecraft.init.Blocks;
@@ -12,6 +13,7 @@ import net.minecraft.world.WorldServer;
 import net.minecraft.world.chunk.Chunk;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.common.Mod.EventBusSubscriber;
+import net.minecraftforge.fml.common.event.FMLServerStartingEvent;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent.WorldTickEvent;
 
@@ -20,6 +22,14 @@ public class WinterWonderLand
 {
     public static final String MODID = "winterwonderland";
     public static final String VERSION = "1.2.2";
+
+    public static boolean meltMode = false;
+    public static boolean accumulateMode = false;
+
+    @Mod.EventHandler
+	public void onServerStart(FMLServerStartingEvent event) {
+    	event.registerServerCommand(new CommandWWL());
+	}
     
     @EventBusSubscriber
     public static class EventHander {
@@ -28,12 +38,11 @@ public class WinterWonderLand
     	@SubscribeEvent
     	public static void onWorldTick(WorldTickEvent event) {
     		WorldServer world = (WorldServer) event.world;
-    		
-    		
-    		if (world.isRaining()) {
+
+			if (world.isRaining() || accumulateMode) {
     			onTickSnowIncrease(world);
-    		} else if (world.provider.isDaytime()) {
-    			onTickSnowDecrease(world);
+    		} else if (world.provider.isDaytime() || meltMode) {
+				onTickSnowDecrease(world);
     		}
     	}
     	
@@ -65,29 +74,63 @@ public class WinterWonderLand
     		for (Iterator<Chunk> iterator = world.getPersistentChunkIterable(world.getPlayerChunkMap().getChunkIterator()); iterator.hasNext();) {
     			Chunk chunk = iterator.next();
     			
-    			if (r.nextInt(Config.snowMeltRate) != 0) {
+    			if (!meltMode && r.nextInt(Config.snowMeltRate) != 0) {
     				continue;
     			}
     			
 				BlockPos pos = getRandomPosInChunk(chunk);
-    			
-    			pos = getSnowTopPosition(world, pos);
-    			
-    			int layers = snowHeightAt(world, pos);
-    			
-    			if (layers <= Config.snowMinLayers) {
-    				continue;
-    			}
-    			
-    			if (layers % 8 != 1) {
-    				// decrement layer
-    				world.setBlockState(pos, Blocks.SNOW_LAYER.getDefaultState().withProperty(BlockSnow.LAYERS, (layers-1)%8));
-    			} else {
-    				//remove last layer
-    				world.setBlockToAir(pos);
-    			}
+
+				switch(Config.snowDriftArea) {
+					case 9:
+						decrementSnowHeight(world, pos.north().east());
+					case 8:
+						decrementSnowHeight(world, pos.south().west());
+					case 7:
+						decrementSnowHeight(world, pos.north().west());
+					case 6:
+						decrementSnowHeight(world, pos.south().east());
+					case 5:
+						decrementSnowHeight(world, pos.west());
+					case 4:
+						decrementSnowHeight(world, pos.east());
+					case 3:
+						decrementSnowHeight(world, pos.north());
+					case 2:
+						decrementSnowHeight(world, pos.south());
+					case 1:
+						decrementSnowHeight(world, pos);
+				}
     		}
     	}
+
+		private static void decrementSnowHeight(WorldServer world, BlockPos pos) {
+			pos = getSnowTopPosition(world, pos);
+
+			int layers = snowHeightAt(world, pos);
+
+			if (layers <= Config.snowMinLayers) {
+				return;
+			}
+
+			int surroundingAtLayer = 0;
+			for(EnumFacing side : EnumFacing.HORIZONTALS){
+				if (snowHeightAt(world, getSnowTopPosition(world, pos.offset(side))) <= layers) {
+					surroundingAtLayer++;
+				}
+			}
+
+			if (surroundingAtLayer < Config.smoothing) {
+				return;
+			}
+
+			if (layers % 8 != 1) {
+				// decrement layer
+				world.setBlockState(pos, Blocks.SNOW_LAYER.getDefaultState().withProperty(BlockSnow.LAYERS, (layers-1)%8));
+			} else {
+				//remove last layer
+				world.setBlockToAir(pos);
+			}
+		}
     	
 		private static void onTickSnowIncrease(WorldServer world) {
     		int baseRate = Config.accumulationRate;
@@ -100,29 +143,15 @@ public class WinterWonderLand
     		for (Iterator<Chunk> iterator = world.getPersistentChunkIterable(world.getPlayerChunkMap().getChunkIterator()); iterator.hasNext();) {
     			Chunk chunk = iterator.next();
     			
-    			if (r.nextInt(baseRate) != 0) {
+    			if (!accumulateMode && r.nextInt(baseRate) != 0) {
     				continue;
     			}
 
     			if (!world.provider.canDoRainSnowIce(chunk)) {
     				continue;
     			}
-    			
+
     			BlockPos pos = getRandomPosInChunk(chunk);
-    			
-    			pos = getSnowTopPosition(world, pos);
-    			int layers = snowHeightAt(world, pos);
-    			
-    			int surroundingAtLayer = 0;
-    			for(EnumFacing side : EnumFacing.HORIZONTALS){ 
-    				if (snowHeightAt(world, getSnowTopPosition(world, pos.offset(side))) >= layers) {
-    					surroundingAtLayer++;
-    				}
-    			}
-    			
-    			if (surroundingAtLayer < Config.smoothing) {
-    				continue;
-    			}
     			
 				switch(Config.snowDriftArea) {
 				case 9:
@@ -160,6 +189,23 @@ public class WinterWonderLand
 			}
 			
 			if (layers >= Config.maxSnowLayers ) {
+				return;
+			}
+
+			int surroundingAtLayer = 0;
+			for(EnumFacing side : EnumFacing.HORIZONTALS){
+				BlockPos topPos = getSnowTopPosition(world, pos.offset(side));
+				if (snowHeightAt(world, topPos) >= layers) {
+					surroundingAtLayer++;
+				} else {
+					Block topBlock = world.getBlockState(topPos).getBlock();
+					if (topBlock != Blocks.SNOW_LAYER && !world.canSnowAt(topPos, true)) {
+						surroundingAtLayer++;
+					}
+				}
+			}
+
+			if (surroundingAtLayer < Config.smoothing) {
 				return;
 			}
 			
